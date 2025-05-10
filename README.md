@@ -2,6 +2,7 @@
 After initializing a Supabase project and this repo do the following. Don't forget your local .env file to test these out.
 
 *To include Custom Claims, for user roles:
+
     1) Make a enum type roles where you set up your desired roles for the app
 
     2) Create user_roles table, with fk column user_id where you reference user id from auth schema and a column for 'role'
