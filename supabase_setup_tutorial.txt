@@ -1,0 +1,84 @@
+After initializing a Supabase project and this repo do the following. Don't forget your local .env file to test these out.
+
+*To include Custom Claims, for user roles:
+    1) Make a enum type roles where you set up your desired roles for the app
+
+    2) Create user_roles table, with fk column user_id where you reference user id from auth schema and a column for 'role'
+       of the enum type you made previously, you can set up a default value (e.g. 'guest', 'basic').
+        -Include RLS policy on this table, that only auth admins can read user roles, and users can only view their own data
+
+    3) Write a function custom_access_token_hook with arguments event, jsonb, return type jsonb and Security Invoker. Schema will be public.
+        Function definition in plpgsql:
+            CREATE OR REPLACE FUNCTION custom_access_token_hook(event jsonb)
+            RETURNS jsonb AS $$
+            DECLARE
+                claims jsonb;
+                user_role public.app_role;
+            BEGIN
+                -- Fetch the user role in the user_roles table
+                SELECT role INTO user_role FROM public.user_roles WHERE user_id = (event->>'user_id')::uuid;
+                claims := event->'claims';
+                
+                IF user_role IS NOT NULL THEN
+                    -- Set the claim
+                    claims := jsonb_set(claims, '{user_role}', to_jsonb(user_role::text));
+                ELSE
+                    claims := jsonb_set(claims, '{user_role}', 'null');
+                END IF;
+
+                -- Update the 'claims' object in the original event
+                event := jsonb_set(event, '{claims}', claims);
+                
+                -- Return the modified or original event
+                RETURN event;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            grant usage on schema public to supabase_auth_admin;
+            grant execute
+            on function public.custom_access_token_hook
+            to supabase_auth_admin;
+            revoke execute
+            on function public.custom_access_token_hook
+            from authenticated, anon, public;
+            grant all
+            on table public.user_roles
+            to supabase_auth_admin;
+
+    4) Optionally, but recommended, you can make a trigger return type function to add roles by default to any new users.
+       Make a function handle_new_user with no arguments, trigger return type, and Security Definer defined as:
+                BEGIN
+                    INSERT INTO public.user_roles (user_id)
+                    VALUES (NEW.id);
+                    RETURN NEW;
+                END;
+    
+    5) For the previous function to actually be triggered, you need to create a trigger inside the 'auth' schema, where you
+       specifically call the above function after a new user is successfully inserted (create) into the auth.users table:
+                CREATE TRIGGER on_auth_user_created
+                AFTER INSERT ON auth.users
+                FOR EACH ROW
+                EXECUTE FUNCTION handle_new_user();
+
+    5) Connect the custom_access_token_hook function to Auth Hooks from Supabase Authentication tab by clicking create hook,
+      and then just selecting the schema public in this case, and the Postgres function we made before.
+      Last, Toggle 'Enable Customize Access Token (JWT) Claims hook and save. 
+
+    
+    Check Supabase documentation for this similar implementation. Only thing I added on top is the trigger function to 
+    automatically give users the default assignated role of 'guest' on my app. You can customize this as you wish, or leave 
+    it out depending on your preferences.
+    https://supabase.com/docs/guides/database/postgres/custom-claims-and-role-based-access-control-rbac
+
+______________________________________
+
+* To further interact with other tables in Supabase, you simply create them inside of the 'public' schema, add RLS policies as you need.
+
+Next, using a Layered Architecture you will make:
+Controller -> Service -> Repository files to interact with your database and process data as you want to inside of service.
+
+To define the endpoint, you make a new Route file similar to the existing Auth.js and you call functions from the controller, 
+by specifying the request type (GET, POST, PUT, DELETE, PATCH, etc.).
+
+You can modify it even further by adding middlewares to check for user roles, or validators for input before calling save in your
+database, or any other stuff you can think of that will help build your backend.
